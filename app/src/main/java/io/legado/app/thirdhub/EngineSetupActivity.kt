@@ -30,11 +30,11 @@ class EngineSetupActivity : AppCompatActivity() {
         tvStatus = TextView(this).apply { textSize = 15f }
         root.addView(tvStatus)
 
-        val hint = TextView(this).apply {
+        val hintTv = TextView(this).apply {
             text = "\n使用步骤:\n1. 登录 ThirdHub 账号(与后端 App 同一账号)\n2. 返回首页 → 我的 → 书源管理 → 导入书源\n3. 完成。前端搜索小说/漫画时自动经过后端调用本引擎"
             textSize = 13f; setTextColor(Color.GRAY)
         }
-        root.addView(hint)
+        root.addView(hintTv)
 
         if (EngineBridge.token.isEmpty()) {
             val mail = EditText(this).apply { hint = "邮箱"; inputType = InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS }
