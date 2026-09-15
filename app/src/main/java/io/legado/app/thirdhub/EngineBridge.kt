@@ -11,6 +11,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import splitties.init.appCtx
 import java.io.OutputStreamWriter
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -94,11 +97,28 @@ object EngineBridge {
         return if (lan.isNotEmpty() && sec.isNotEmpty()) lan to sec else null
     }
 
+    /** THP UDP 广播: 局域网内前端/后端都能自动发现本引擎(匿名, 无需登录) */
+    private fun startUdpBeacon() {
+        scope.launch {
+            runCatching {
+                val sock = DatagramSocket()
+                sock.broadcast = true
+                val msg = "THP/1 HELLO 1234 novel,comic,audio".toByteArray()
+                val addr = InetAddress.getByName("255.255.255.255")
+                while (true) {
+                    runCatching { sock.send(DatagramPacket(msg, msg.size, addr, 19527)) }
+                    delay(5_000)
+                }
+            }
+        }
+    }
+
     /** 心跳: 每60秒把本引擎注册到后端(后端据此把搜索/正文请求转发过来) */
     fun start() {
         if (started) return
         started = true
         restore()
+        startUdpBeacon()
         scope.launch {
             while (true) {
                 try {
