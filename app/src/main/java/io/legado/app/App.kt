@@ -75,6 +75,11 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashHandler(this)
+        // ThirdHub 引擎: 开机即用 —— 自动启动 Web 服务 + 账号配对桥
+        runCatching {
+            io.legado.app.service.WebService.startForeground(this)
+            io.legado.app.thirdhub.EngineBridge.start()
+        }
         if (isDebuggable) {
             ThreadUtils.hasSubtleSideEffectsSetThreadAssertsDisabledForTesting(true)
         }

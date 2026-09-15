@@ -1,0 +1,40 @@
+name: engine-build
+# ThirdHub 阅读引擎: tag(engine-v*)触发 → 构建APK → 上传Supabase下载桶
+on:
+  push:
+    tags: ['engine-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build APK (debug签名, 可直接安装)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleAppDebug -ParmOnly=true --parallel --warning-mode all
+      - name: Rename
+        run: |
+          APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          echo "found: $APK"
+          cp "$APK" thirdhub-engine.apk
+          ls -la thirdhub-engine.apk
+      - name: Upload to Supabase
+        run: |
+          curl -sS -X POST "https://mxvxlgjzeboktufumxbp.supabase.co/storage/v1/object/downloads/thirdhub/thirdhub-engine.apk" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_KEY }}" \
+            -H "x-upsert: true" -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary @thirdhub-engine.apk
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: thirdhub-engine.apk

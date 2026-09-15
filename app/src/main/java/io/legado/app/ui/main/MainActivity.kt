@@ -120,6 +120,14 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
     private var passphraseReadGeneration = 0
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
+        // ThirdHub 引擎: 首次启动进入引擎设置(登录账号), 之后直达书架
+        runCatching {
+            val p = getSharedPreferences("th_engine", 0)
+            if (!p.getBoolean("setup_shown", false)) {
+                p.edit().putBoolean("setup_shown", true).apply()
+                startActivity(android.content.Intent(this, io.legado.app.thirdhub.EngineSetupActivity::class.java))
+            }
+        }
         upBottomMenu()
         initView()
         upHomePage()

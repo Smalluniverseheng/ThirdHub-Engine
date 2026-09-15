@@ -6,6 +6,7 @@ import io.legado.app.api.ReturnData
 import io.legado.app.api.controller.BookController
 import io.legado.app.api.controller.BookSourceController
 import io.legado.app.api.controller.BookSourceCheckController
+import io.legado.app.api.controller.EngineSearchController
 import io.legado.app.api.controller.HttpLogController
 import io.legado.app.api.controller.ReplaceRuleController
 import io.legado.app.api.controller.ReviewController
@@ -142,6 +143,8 @@ class HttpServer(port: Int) : NanoHTTPD(port) {
                                 BookSourceController.isJsSourceApiTokenRequired
                             "/getHttpLogs" -> HttpLogController.getLogs(parameters)
                             "/getHttpLog" -> HttpLogController.getLog(parameters)
+                            "/searchBookHttp" -> EngineSearchController.search(parameters)
+                            "/searchBook" -> EngineSearchController.search(parameters)
                             "/getBookshelf" -> BookController.bookshelf
                             "/getChapterList" -> BookController.getChapterList(parameters)
                             "/refreshToc" -> BookController.refreshToc(parameters)
