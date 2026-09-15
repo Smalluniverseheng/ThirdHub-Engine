@@ -1,5 +1,5 @@
 name: engine-build
-# ThirdHub 阅读引擎: tag(engine-v*)触发 → 构建APK → 上传Supabase下载桶
+# ThirdHub 阅读引擎: tag(engine-v*)触发 → Release构建(固定签名, 覆盖安装保留数据) → 上传Supabase下载桶
 on:
   push:
     tags: ['engine-v*']
@@ -18,10 +18,23 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build APK (debug签名, 可直接安装)
+      - name: Prepare signing
+        env:
+          ENGINE_KEY_STORE: ${{ secrets.ENGINE_KEY_STORE }}
+        run: |
+          printf '%s' "$ENGINE_KEY_STORE" | base64 --decode > "$GITHUB_WORKSPACE/app/engine.jks"
+      - name: Build APK (arm64)
+        env:
+          ENGINE_KEY_PASSWORD: ${{ secrets.ENGINE_KEY_PASSWORD }}
+          ENGINE_STORE_PASSWORD: ${{ secrets.ENGINE_STORE_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleAppDebug -ParmOnly=true --parallel --warning-mode all
+          ./gradlew :app:assembleAppRelease -ParmOnly=true \
+            -PRELEASE_STORE_FILE=./engine.jks \
+            -PRELEASE_STORE_PASSWORD="$ENGINE_STORE_PASSWORD" \
+            -PRELEASE_KEY_ALIAS=engine \
+            -PRELEASE_KEY_PASSWORD="$ENGINE_KEY_PASSWORD" \
+            --parallel --warning-mode all
       - name: Rename
         run: |
           APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
