@@ -64,6 +64,7 @@ class ThpServer(port: Int = 1234) : NanoHTTPD(port) {
                 uri == "/thp/search" -> search(session.parms)
                 uri == "/thp/chapters" -> chapters(session.parms)
                 uri == "/thp/content" -> content(session.parms)
+                // NanoHTTPD parms 是单值 Map, 控制器要 List<String> — 在各 handler 里转
                 uri == "/thp/discover" -> json(404, err("unsupported", "发现页暂不支持, 请用搜索"))
                 else -> json(404, err("not_found", "未知端点"))
             }
@@ -73,9 +74,9 @@ class ThpServer(port: Int = 1234) : NanoHTTPD(port) {
     }
 
     // ── 搜索: 复用 EngineSearchController(官方 SearchModel 全量书源并发) ──
-    private fun search(parms: Map<String, List<String>>): Response {
-        val q = parms["q"]?.firstOrNull()?.trim()
-        val type = parms["type"]?.firstOrNull() ?: "novel"
+    private fun search(parms: Map<String, String>): Response {
+        val q = parms["q"]?.trim()
+        val type = parms["type"] ?: "novel"
         if (q.isNullOrEmpty()) return json(400, err("invalid_request", "缺参数 q"))
         // THP type → legado sourceType: novel→0(text) comic→2(image) music→1(audio)
         val wantType = when (type) { "comic" -> 2; "music" -> 1; else -> 0 }
@@ -102,11 +103,12 @@ class ThpServer(port: Int = 1234) : NanoHTTPD(port) {
     }
 
     // ── 目录: 书不在库时按搜索缓存补登, 再走官方 refreshToc ──
-    private fun chapters(parms: Map<String, List<String>>): Response {
-        val id = parms["id"]?.firstOrNull()
-        if (id.isNullOrEmpty()) return json(400, err("invalid_request", "缺参数 id"))
-        ensureBook(id)
-        val rd = BookController.getChapterList(mapOf("url" to listOf(id)))
+    private fun chapters(parms: Map<String, String>): Response {
+        val id = parms["id"]
+        if (id.isNullOrBlank()) return json(400, err("invalid_request", "缺参数 id"))
+        val bookUrl = id
+        ensureBook(bookUrl)
+        val rd = BookController.getChapterList(mapOf("url" to listOf(bookUrl)))
         if (!rd.isSuccess) return json(502, err("source_error", rd.errorMsg ?: "目录获取失败"))
         val list = (rd.data as? List<*>) ?: emptyList<Any>()
         val items = JSONArray()
@@ -121,20 +123,21 @@ class ThpServer(port: Int = 1234) : NanoHTTPD(port) {
     }
 
     // ── 正文: 章节URL → 反查 index → 官方 getBookContent ──
-    private fun content(parms: Map<String, List<String>>): Response {
-        val id = parms["id"]?.firstOrNull()
-        val chapter = parms["chapter"]?.firstOrNull()
-        if (id.isNullOrEmpty() || chapter.isNullOrEmpty()) return json(400, err("invalid_request", "缺参数 id/chapter"))
-        ensureBook(id)
+    private fun content(parms: Map<String, String>): Response {
+        val id = parms["id"]
+        val chapter = parms["chapter"]
+        if (id.isNullOrBlank() || chapter.isNullOrBlank()) return json(400, err("invalid_request", "缺参数 id/chapter"))
+        val bookUrl = id
+        ensureBook(bookUrl)
         // chapter 可能是序号也可能是 URL
         var index = chapter.toIntOrNull()
         if (index == null) {
-            val toc = appDb.bookChapterDao.getChapterList(id)
+            val toc = appDb.bookChapterDao.getChapterList(bookUrl)
             val hit = toc.firstOrNull { it.url == chapter }
             index = hit?.index
         }
         if (index == null) return json(404, err("not_found", "章节不存在"))
-        val rd = BookController.getBookContent(mapOf("url" to listOf(id), "index" to listOf(index.toString())))
+        val rd = BookController.getBookContent(mapOf("url" to listOf(bookUrl), "index" to listOf(index.toString())))
         if (!rd.isSuccess) return json(502, err("source_error", rd.errorMsg ?: "正文获取失败"))
         return json(200, JSONObject().put("object", "novel-content")
             .put("data", JSONObject().put("text", (rd.data as? String) ?: "")))
