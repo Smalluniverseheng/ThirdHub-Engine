@@ -97,16 +97,31 @@ object EngineBridge {
         return if (lan.isNotEmpty() && sec.isNotEmpty()) lan to sec else null
     }
 
-    /** THP UDP 广播: 局域网内前端/后端都能自动发现本引擎(匿名, 无需登录) */
+    // THP/1.0 实例标识(持久化, 前后端据此去重/BYE)
+    private val instanceId: String
+        get() {
+            var id = prefs.getString("instance_id", "") ?: ""
+            if (id.isEmpty()) {
+                id = "eng-" + java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+                prefs.edit().putString("instance_id", id).apply()
+            }
+            return id
+        }
+
+    /** THP UDP 广播: 局域网内前端/后端都能自动发现本引擎(匿名, 无需登录)
+     *  新格式: THP/1 HELLO <port> <instanceId> engine <caps> <name> (THP/1.0 §4.1)
+     *  兼容: 同时发旧草稿格式, 老版本前端/后端也能发现 */
     private fun startUdpBeacon() {
         scope.launch {
             runCatching {
                 val sock = DatagramSocket()
                 sock.broadcast = true
-                val msg = "THP/1 HELLO 1234 novel,comic,audio".toByteArray()
                 val addr = InetAddress.getByName("255.255.255.255")
+                val msgNew = "THP/1 HELLO ${ThpServer.PORT} $instanceId engine novel,comic,audio 阅读引擎".toByteArray()
+                val msgOld = "THP/1 HELLO ${ThpServer.PORT} novel,comic,audio".toByteArray()
                 while (true) {
-                    runCatching { sock.send(DatagramPacket(msg, msg.size, addr, 19527)) }
+                    runCatching { sock.send(DatagramPacket(msgNew, msgNew.size, addr, 19527)) }
+                    runCatching { sock.send(DatagramPacket(msgOld, msgOld.size, addr, 19527)) }
                     delay(5_000)
                 }
             }
@@ -118,6 +133,7 @@ object EngineBridge {
         if (started) return
         started = true
         restore()
+        ThpServer.ensureStarted() // THP/1.0 协议端点(:1234), 前端直连与后端转发共用
         startUdpBeacon()
         scope.launch {
             while (true) {
