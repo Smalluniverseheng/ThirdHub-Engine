@@ -1,6 +1,7 @@
 package io.legado.app.api.controller
 
 import io.legado.app.api.ReturnData
+import io.legado.app.constant.BookType
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.webBook.SearchModel
@@ -40,13 +41,19 @@ object EngineSearchController {
             done.await(25, TimeUnit.SECONDS)
             runCatching { model.close() }
             // 附带书源类型, 方便后端按模块路由(0小说 1音频 2漫画)
+            // 注意: SearchBook.type 是 BookType 位标志(text=8/audio=32/image=64), 需归一化为 0/1/2
             val list = results.map { b ->
+                val st = when {
+                    b.type and BookType.image != 0 -> 2
+                    b.type and BookType.audio != 0 -> 1
+                    else -> 0
+                }
                 mapOf(
                     "name" to b.name, "author" to (b.author ?: ""),
                     "kind" to (b.kind ?: ""), "coverUrl" to (b.coverUrl ?: ""),
                     "intro" to (b.intro ?: ""), "bookUrl" to b.bookUrl,
                     "origin" to b.origin, "originName" to b.originName,
-                    "sourceType" to b.type, "typeName" to when (b.type) { 0 -> "text"; 1 -> "audio"; 2 -> "image"; else -> "unknown" }
+                    "sourceType" to st, "typeName" to when (st) { 0 -> "text"; 1 -> "audio"; 2 -> "image"; else -> "unknown" }
                 )
             }
             ReturnData().setData(list)

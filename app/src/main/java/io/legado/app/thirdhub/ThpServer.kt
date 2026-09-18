@@ -4,10 +4,15 @@ import fi.iki.elonen.NanoHTTPD
 import io.legado.app.api.ReturnData
 import io.legado.app.api.controller.BookController
 import io.legado.app.api.controller.EngineSearchController
+import io.legado.app.constant.BookType
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.help.source.exploreKinds
+import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.GSON
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -16,19 +21,21 @@ import java.util.concurrent.ConcurrentHashMap
  * THP/1.0 引擎服务端: 让 ThirdHub 前端/后端按 THP 协议直接调用本引擎
  * 端口 1234(与 EngineBridge 的 UDP HELLO 广播一致), 匿名无鉴权
  *
- * 端点(THP v1 最小集):
+ * 端点(THP v1):
  *   GET /thp/meta                        → 引擎名片(name/caps/version/auth)
  *   GET /thp/search?type=novel&q=关键词   → {data:{items:[{id,name,author,coverUrl,intro,kind}]}}
  *   GET /thp/chapters?type=novel&id=书URL → {data:{items:[{name,url,index}]}}
  *   GET /thp/content?type=novel&id=书URL&chapter=章节URL → {data:{text}}
- * 说明: 搜索/目录/正文全部委托 Legado 官方控制器(EngineSearchController/BookController),
+ *   GET /thp/discover?type=novel         → {data:{items:[{source,sourceName,tags:[{name,url}]}]}}
+ *   GET /thp/explore?type=novel&source=源URL&url=分类URL&page=1 → 同 search 的书籍条目
+ * 说明: 搜索/目录/正文/发现全部委托 Legado 本体(EngineSearchController/BookController/WebBook),
  *       规则解析 100% 由 Legado 引擎本体完成, 本层只做协议转换。
  */
 class ThpServer(port: Int = 1234) : NanoHTTPD(port) {
 
     companion object {
         const val PORT = 1234
-        const val VERSION = "thp-engine-1.2.0"
+        const val VERSION = "thp-engine-1.3.0"
         private var instance: ThpServer? = null
 
         @Synchronized
@@ -65,7 +72,8 @@ class ThpServer(port: Int = 1234) : NanoHTTPD(port) {
                 uri == "/thp/chapters" -> chapters(session.parms)
                 uri == "/thp/content" -> content(session.parms)
                 // NanoHTTPD parms 是单值 Map, 控制器要 List<String> — 在各 handler 里转
-                uri == "/thp/discover" -> json(404, err("unsupported", "发现页暂不支持, 请用搜索"))
+                uri == "/thp/discover" -> discover(session.parms)
+                uri == "/thp/explore" -> explore(session.parms)
                 else -> json(404, err("not_found", "未知端点"))
             }
         } catch (e: Exception) {
@@ -143,10 +151,85 @@ class ThpServer(port: Int = 1234) : NanoHTTPD(port) {
             .put("data", JSONObject().put("text", (rd.data as? String) ?: "")))
     }
 
-    // 书不在 Legado 库 → 用搜索缓存构造 Book 入库(tocUrl 留空, refreshToc 会自动取详情)
+    // ── 发现: 返回各书源的分类标签(源 → tags), 前端按源分组渲染 ──
+    private fun discover(parms: Map<String, String>): Response {
+        val type = parms["type"] ?: "novel"
+        // THP type → legado bookSourceType: novel→0(text) music→1(audio) comic→2(image) video→4
+        val wantSourceType = when (type) { "music" -> 1; "comic" -> 2; "video" -> 4; else -> 0 }
+        val sources = appDb.bookSourceDao.allEnabledExplore
+            .filter { it.bookSourceType == wantSourceType && !it.exploreUrl.isNullOrBlank() }
+        val items = JSONArray()
+        for (bs in sources) {
+            // exploreKinds 可能执行书源 JS, 单源限时 8s, 失败跳过不影响其他源
+            val kinds = runBlocking {
+                withTimeoutOrNull(8_000) { runCatching { bs.exploreKinds() }.getOrNull() }
+            } ?: continue
+            val tags = JSONArray()
+            for (k in kinds) {
+                val u = k.url ?: continue
+                tags.put(JSONObject().put("name", k.title).put("url", u))
+            }
+            if (tags.length() == 0) continue
+            items.put(JSONObject()
+                .put("source", bs.bookSourceUrl)
+                .put("sourceName", bs.bookSourceName)
+                .put("tags", tags))
+        }
+        return json(200, JSONObject().put("object", "list").put("data", JSONObject().put("items", items)))
+    }
+
+    // ── 发现列表: 按 源+分类URL+页码 取书籍条目(字段与 search 对齐, 同样进缓存供目录/正文) ──
+    private fun explore(parms: Map<String, String>): Response {
+        val source = parms["source"]
+        val tagUrl = parms["url"]
+        if (source.isNullOrBlank() || tagUrl.isNullOrBlank()) return json(400, err("invalid_request", "缺参数 source/url"))
+        val page = parms["page"]?.toIntOrNull() ?: 1
+        val bs = appDb.bookSourceDao.getBookSource(source)
+            ?: return json(404, err("not_found", "书源不存在"))
+        val books = runBlocking {
+            withTimeoutOrNull(25_000) {
+                runCatching { WebBook.exploreBookAwait(bs, tagUrl, page) }.getOrNull()
+            }
+        } ?: return json(502, err("source_error", "发现列表获取失败"))
+        val items = JSONArray()
+        for (sb in books) {
+            val st = when {
+                sb.type and BookType.image != 0 -> 2
+                sb.type and BookType.audio != 0 -> 1
+                else -> 0
+            }
+            val bookUrl = sb.bookUrl
+            if (bookUrl.isBlank()) continue
+            val cached = mapOf(
+                "name" to sb.name, "author" to (sb.author ?: ""),
+                "kind" to (sb.kind ?: ""), "coverUrl" to (sb.coverUrl ?: ""),
+                "intro" to (sb.intro ?: ""), "bookUrl" to bookUrl,
+                "origin" to sb.origin, "originName" to sb.originName,
+                "sourceType" to st
+            )
+            searchCache[bookUrl] = cached
+            if (searchCache.size > 500) searchCache.remove(searchCache.keys.first())
+            items.put(JSONObject()
+                .put("id", bookUrl)
+                .put("name", sb.name)
+                .put("author", sb.author ?: "")
+                .put("coverUrl", sb.coverUrl ?: "")
+                .put("intro", (sb.intro ?: "").take(200))
+                .put("kind", sb.kind ?: ""))
+        }
+        return json(200, JSONObject().put("object", "list").put("data", JSONObject().put("items", items)))
+    }
+
+    // 书不在 Legado 库 → 用搜索/发现缓存构造 Book 入库(tocUrl 留空, refreshToc 会自动取详情)
     private fun ensureBook(bookUrl: String) {
         if (appDb.bookDao.getBook(bookUrl) != null) return
         val c = searchCache[bookUrl] ?: return
+        // 缓存里 sourceType 是归一化的 0/1/2, Book.type 需要 BookType 位标志
+        val bookType = when ((c["sourceType"] as? Int) ?: 0) {
+            2 -> BookType.image
+            1 -> BookType.audio
+            else -> BookType.text
+        }
         val book = Book(
             bookUrl = bookUrl,
             origin = (c["origin"] as? String) ?: "",
@@ -156,7 +239,7 @@ class ThpServer(port: Int = 1234) : NanoHTTPD(port) {
             kind = (c["kind"] as? String),
             coverUrl = (c["coverUrl"] as? String),
             intro = (c["intro"] as? String),
-            type = (c["sourceType"] as? Int) ?: 0,
+            type = bookType,
         )
         runCatching { book.save() }
     }
